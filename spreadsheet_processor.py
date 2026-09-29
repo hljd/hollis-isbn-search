@@ -215,7 +215,7 @@ def classify_rows(sheet, rows, isbn_col, client, progress=None, status=None):
 
 
 def result_notes(result):
-    """Keep successful results simple; explain uncolored rows."""
+    """Format Notes for the preview and Excel output."""
     if result.status == "green":
         return ""
 
@@ -223,14 +223,28 @@ def result_notes(result):
         return result.matches[0].title if result.matches else ""
 
     if result.status == "yellow":
-        return "\n".join(
-            f"{match.title} — {match.url}"
-            if match.url
-            else match.title
-            for match in result.matches
-        )
+        lines = []
+        multiple = len(result.matches) > 1
 
-    # Uncolored rows: explain why manual review is needed.
+        for match in result.matches:
+            text = match.title
+
+            # Multiple destinations cannot be separate cell hyperlinks
+            # within the same Notes cell, so show their URLs explicitly.
+            if multiple and match.url:
+                text += f" — {match.url}"
+
+            if match.hollis_number is None:
+                text = (
+                    "No HOLLIS number; manual review required: "
+                    + text
+                )
+
+            lines.append(text)
+
+        return "\n".join(lines)
+
+    # Uncolored rows: retain the existing review explanations.
     lines = [result.reason or "Manual review required."]
 
     if result.matches:
@@ -286,7 +300,11 @@ def render_workbook(workbook, sheet_name, rows, results, header_row=1):
         alignment = copy(output.alignment)
         alignment.wrap_text, alignment.vertical = True, "top"
         output.alignment = alignment
-        if result.status == "red" and result.matches and result.matches[0].url:
+        if (
+            result.status in ("red", "yellow")
+            and len(result.matches) == 1
+            and result.matches[0].url
+        ):
             output.hyperlink = result.matches[0].url
             font = copy(output.font)
             font.color, font.underline = "0563C1", "single"

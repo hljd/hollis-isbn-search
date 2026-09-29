@@ -19,7 +19,7 @@ logging.basicConfig(
 st.set_page_config(page_title="HOLLIS ISBN Checker", layout="centered")
 st.title("HOLLIS ISBN Purchase Screening")
 st.write("Upload a book list, select its ISBN and title columns, and download a checked Excel copy.")
-st.caption("Green: no verified match · Red: one match · Yellow: multiple matches · Uncolored: manual review")
+st.caption("Green: no verified match · Red: one match · Yellow: manual review · Uncolored: search errors")
 uploaded = st.file_uploader("Book spreadsheet", type=["xlsx", "csv", "tsv", "txt"])
 if uploaded is None:
     st.stop()
@@ -138,8 +138,8 @@ if completed and st.session_state.get("result_signature") == signature:
     st.subheader("Results")
     values = [("Rows", len(rows)), ("Purchase candidates", counts.get("green", 0)),
               ("Already in HOLLIS", counts.get("red", 0)),
-              ("Multiple records", counts.get("yellow", 0)),
-              ("Manual review", counts.get("white", 0))]
+              ("Manual review", counts.get("yellow", 0)),
+              ("Search errors", counts.get("white", 0))]
     for column, (label, value) in zip(st.columns(5), values):
         column.metric(label, value)
     st.dataframe(preview, hide_index=True, use_container_width=True)
