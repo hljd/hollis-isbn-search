@@ -48,6 +48,7 @@ class SearchError(Exception):
 class Match:
     title: str
     url: str | None = None
+    hollis_number: str | None = None
 
 
 @dataclass
@@ -106,6 +107,29 @@ def _record_isbns(record):
 def _record_title(record):
     display = record["pnx"].get("display", {})
     return _first_text(display.get("title")) if isinstance(display, dict) else ""
+
+
+def _record_hollis_number(record):
+    """Displayed HOLLIS number: pnx.display.lds01.
+
+    Verified against the user's three Sandbox responses and HOLLIS export
+    on 2026-09-24. This is a screening rule, not proof of ownership.
+    Never fall back to mms, control.recordid, or the record URL: all three
+    examples contain generic identifiers, including the yellow examples.
+    """
+    pnx = record.get("pnx")
+    display = pnx.get("display") if isinstance(pnx, dict) else None
+    if not isinstance(display, dict) or not display:
+        raise SearchError("A matching record lacks usable display metadata.")
+    values = display.get("lds01")
+    if values is None:
+        return None
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+        raise SearchError("Unexpected HOLLIS-number field format; manual review required.")
+    numbers = list(dict.fromkeys(value.strip() for value in values if value.strip()))
+    return "; ".join(numbers) if numbers else None
 
 
 def _record_url(record, environment):
@@ -284,10 +308,16 @@ class HollisClient:
             if not title:
                 unverified = True
                 continue
-            matches.append(Match(title, _record_url(record, self.environment)))
+            matches.append(Match(title, _record_url(record, self.environment),
+                                 _record_hollis_number(record)))
         LOG.info("isbn=%s candidates=%s confirmed=%s", isbn, len(records), len(matches))
         if len(matches) >= 2:
             return SearchResult("yellow", matches)
         if unverified:
             return SearchResult("white", matches, "One or more HOLLIS candidates could not be verified.")
-        return SearchResult("red", matches) if matches else SearchResult("green")
+        if not matches:
+            return SearchResult("green")
+        if matches[0].hollis_number is None:
+            return SearchResult("yellow", matches,
+                                "No HOLLIS number listed; manual review required.")
+        return SearchResult("red", matches)
