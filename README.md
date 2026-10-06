@@ -1,4 +1,4 @@
-# HOLLIS ISBN Search
+# HOLLIS Book Search
 
 A Python and Streamlit application developed for Harvard Library’s Judaica Division to help staff check spreadsheet book lists against the HOLLIS Library Catalog and identify potential purchase candidates.
 
