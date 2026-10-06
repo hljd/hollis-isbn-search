@@ -2,8 +2,8 @@
 import hashlib
 import logging
 import os
+import time
 from pathlib import Path
-
 import streamlit as st
 
 from hollis_api import HollisClient
@@ -11,6 +11,18 @@ from spreadsheet_processor import (
     classify_rows, column_options, data_rows, read_input, render_workbook,
     ImportErrorMessage, result_notes,
 )
+
+
+def format_duration(seconds):
+    total_seconds = max(0, round(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {seconds:02d}s"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
+
 
 logging.basicConfig(
     level=getattr(logging, os.getenv("HOLLIS_LOG_LEVEL", "WARNING").upper(), logging.WARNING),
@@ -92,6 +104,7 @@ signature = (file_hash, uploaded.name, encoding, delimiter,
              sheet_name, header_row, isbn_col, title_col, environment)
 if st.session_state.get("result_signature") != signature:
     st.session_state.pop("completed_result", None)
+    st.session_state.pop("search_elapsed_seconds", None)
 
 if st.button("Search HOLLIS", disabled=not rows):
     try:
@@ -102,18 +115,38 @@ if st.button("Search HOLLIS", disabled=not rows):
         st.error("Check HOLLIS_API_KEY in your Streamlit secrets configuration.")
         st.stop()
     st.session_state.pop("completed_result", None)
+    st.session_state.pop("search_elapsed_seconds", None)
     bar, row_message = st.progress(0), st.empty()
     phase_message, request_message = st.empty(), st.empty()
+    timer_display = st.empty()
+    timer_display.caption("Elapsed search time: 0s")
+
+    def update_timer():
+        timer_display.caption(
+            f"Elapsed search time: {format_duration(time.perf_counter() - search_started)}"
+        )
+
+    def update_request(message):
+        request_message.info(message)
+        update_timer()
+
+    def update_phase(message):
+        phase_message.write(message)
+        update_timer()
 
     def update_progress(done, total):
         bar.progress(done / total)
         row_message.write(f"{done} of {total} rows have a result; temporary failures may be retried.")
+        update_timer()
 
-    client = HollisClient(api_key.strip(), environment, status_callback=request_message.info)
+    client = HollisClient(api_key.strip(), environment, status_callback=update_request)
+    search_started = time.perf_counter()
     try:
         results = classify_rows(sheet, rows, isbn_col, client,
-                                update_progress, status=phase_message.write)
+                                update_progress, status=update_phase)
     finally:
+        search_elapsed = time.perf_counter() - search_started
+        timer_display.info(f"Elapsed search time: {format_duration(search_elapsed)}.")
         client.close()
     notice = client.run_notice
     phase_message.empty()
@@ -129,6 +162,8 @@ if st.button("Search HOLLIS", disabled=not rows):
     filename = f"Searched_{Path(uploaded.name).stem}.xlsx"
     st.session_state["result_signature"] = signature
     st.session_state["completed_result"] = (output, filename, dict(counts), preview, notice)
+    st.session_state["search_elapsed_seconds"] = search_elapsed
+    timer_display.empty()  # The persistent result section shows the final time.
 
 completed = st.session_state.get("completed_result")
 if completed and st.session_state.get("result_signature") == signature:
@@ -136,6 +171,9 @@ if completed and st.session_state.get("result_signature") == signature:
     if notice:
         st.warning(notice)
     st.subheader("Results")
+    elapsed = st.session_state.get("search_elapsed_seconds")
+    if elapsed is not None:
+        st.info(f"Search finished in {format_duration(elapsed)}.")
     values = [("Rows", len(rows)), ("Purchase candidates", counts.get("green", 0)),
               ("Already in HOLLIS", counts.get("red", 0)),
               ("Manual review", counts.get("yellow", 0)),
