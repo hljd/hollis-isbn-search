@@ -4,7 +4,7 @@ A Python and Streamlit application developed for Harvard Library’s Judaica Div
 
 > **Development status:** This project is under active development. Current testing uses the **Sandbox environment** through Harvard APIgee. Features, documentation, and search behavior will continue to be updated as staff test the app and provide feedback. The interface also offers Production, but the current testing workflow uses Sandbox.
 
-## Original Development
+## Original development
 The application was originally designed and developed by Chloe Qiu (HSPH '27). The project is maintained by the Judaica Division of Harvard Library.
 
 ## What the app does
