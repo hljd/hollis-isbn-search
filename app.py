@@ -1,4 +1,4 @@
-"""Streamlit interface for HOLLIS ISBN purchase screening."""
+"""Streamlit interface for HOLLIS ISBN search."""
 import hashlib
 import logging
 import os
@@ -7,6 +7,7 @@ from pathlib import Path
 import streamlit as st
 
 from hollis_api import HollisClient
+from time_estimator import SearchTimeEstimator
 from spreadsheet_processor import (
     classify_rows, column_options, data_rows, read_input, render_workbook,
     ImportErrorMessage, result_notes,
@@ -28,8 +29,8 @@ logging.basicConfig(
     level=getattr(logging, os.getenv("HOLLIS_LOG_LEVEL", "WARNING").upper(), logging.WARNING),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
-st.set_page_config(page_title="HOLLIS ISBN Checker", layout="centered")
-st.title("HOLLIS ISBN Purchase Screening")
+st.set_page_config(page_title="HOLLIS ISBN Search", layout="centered")
+st.title("HOLLIS ISBN Search")
 st.write("Upload a book list, select its ISBN and title columns, and download a checked Excel copy.")
 st.caption("Green: no verified match · Red: one match · Yellow: manual review · Uncolored: search errors")
 uploaded = st.file_uploader("Book spreadsheet", type=["xlsx", "csv", "tsv", "txt"])
@@ -120,11 +121,31 @@ if st.button("Search HOLLIS", disabled=not rows):
     phase_message, request_message = st.empty(), st.empty()
     timer_display = st.empty()
     timer_display.caption("Elapsed search time: 0s")
+    estimator = SearchTimeEstimator()
 
     def update_timer():
-        timer_display.caption(
-            f"Elapsed search time: {format_duration(time.perf_counter() - search_started)}"
-        )
+        elapsed = time.perf_counter() - search_started
+        if estimator.finished:
+            estimate = "Search stopped" if estimator.stopped else "Search stage finished"
+        else:
+            seconds = estimator.remaining_seconds()
+            if seconds is None:
+                estimate = "Estimating remaining time…"
+            else:
+                estimate = f"Estimated remaining: about {format_duration(seconds)}"
+            if estimator.wait_remaining > 0:
+                estimate += f" (includes {format_duration(estimator.wait_remaining)} of scheduled wait)"
+            if estimator.recovery:
+                estimate += " · Recovery pass"
+        timer_display.caption(f"Elapsed search time: {format_duration(elapsed)} · {estimate}")
+
+    def update_timing(event):
+        estimator.on_progress(event)
+        update_timer()
+
+    def update_wait(remaining, is_delay):
+        estimator.on_wait(remaining, is_delay)
+        update_timer()
 
     def update_request(message):
         request_message.info(message)
@@ -139,11 +160,13 @@ if st.button("Search HOLLIS", disabled=not rows):
         row_message.write(f"{done} of {total} rows have a result; temporary failures may be retried.")
         update_timer()
 
-    client = HollisClient(api_key.strip(), environment, status_callback=update_request)
+    client = HollisClient(api_key.strip(), environment, status_callback=update_request,
+                          wait_callback=update_wait)
     search_started = time.perf_counter()
     try:
         results = classify_rows(sheet, rows, isbn_col, client,
-                                update_progress, status=update_phase)
+                                update_progress, status=update_phase,
+                                timing_progress=update_timing)
     finally:
         search_elapsed = time.perf_counter() - search_started
         timer_display.info(f"Elapsed search time: {format_duration(search_elapsed)}.")

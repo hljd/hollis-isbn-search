@@ -134,7 +134,8 @@ def data_rows(sheet, original_max_col, header_row=1):
                    for col in range(1, original_max_col + 1))]
 
 
-def classify_rows(sheet, rows, isbn_col, client, progress=None, status=None):
+def classify_rows(sheet, rows, isbn_col, client, progress=None, status=None,
+                  timing_progress=None):
     """Search each unique ISBN, then retry transient failures once.
 
     Persistent 429s pause the FIRST pass and queue untouched ISBNs for
@@ -152,6 +153,15 @@ def classify_rows(sheet, rows, isbn_col, client, progress=None, status=None):
         else:
             groups.setdefault(isbn, []).append(row)
 
+    # Separate search timing from row progress: duplicates and invalid ISBNs
+    # do not represent additional searches. Recovery is never treated as done
+    # just because every spreadsheet row already has a provisional result.
+    def report_timing(event, **details):
+        if timing_progress:
+            timing_progress({"event": event, "total": len(groups), **details})
+
+    report_timing("start")
+
     def update(isbn, result):
         outcomes[isbn] = result
         for row in groups[isbn]:
@@ -160,11 +170,13 @@ def classify_rows(sheet, rows, isbn_col, client, progress=None, status=None):
             progress(len(results), len(rows))
 
     def run_pass(keys, label, recovery=False):
+        report_timing("pass_start", pending=len(keys), recovery=recovery)
         for position, isbn in enumerate(keys, 1):
             if status:
                 status(f"{label}: ISBN {position} of {len(keys)}.")
             error = None
             previous = outcomes.get(isbn)
+            report_timing("query_start")
             try:
                 result = client.search_isbn(isbn)
             except SearchError as exc:
@@ -178,6 +190,9 @@ def classify_rows(sheet, rows, isbn_col, client, progress=None, status=None):
             if recovery and previous is not None and previous.retryable and not result.retryable and error is None:
                 result.reason = (result.reason + " Search completed on the recovery pass.").strip()
             update(isbn, result)
+            retry_pending = (sum(value.retryable for value in outcomes.values())
+                             if not recovery else 0)
+            report_timing("completed", pending=len(keys) - position + retry_pending)
             if error is not None and error.stop_batch:
                 return error
         return None
@@ -189,6 +204,7 @@ def classify_rows(sheet, rows, isbn_col, client, progress=None, status=None):
     pending = [isbn for isbn in groups
                if isbn not in outcomes or outcomes[isbn].retryable]
     if pending and can_recover:
+        report_timing("recovery", pending=len(pending), recovery=True)
         try:
             client.wait_for_second_pass()
         except SearchError as exc:
@@ -209,6 +225,7 @@ def classify_rows(sheet, rows, isbn_col, client, progress=None, status=None):
             # Keep the actual failure visible; no further automatic pass.
             if stopped is not None:
                 outcomes[isbn].reason += " Further automatic retries were stopped."
+    report_timing("finished", stopped=stopped is not None)
     if progress:
         progress(len(rows), len(rows))
     return results

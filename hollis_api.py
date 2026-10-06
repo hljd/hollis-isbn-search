@@ -146,11 +146,14 @@ def _record_url(record, environment):
 
 
 class HollisClient:
-    def __init__(self, api_key, environment="Sandbox", status_callback=None):
+    def __init__(self, api_key, environment="Sandbox", status_callback=None,
+                 retry_callback=None, wait_callback=None):
         if environment not in BASE_URLS:
             raise ValueError("Unknown API environment.")
         self.environment = environment
         self.status_callback = status_callback
+        self.retry_callback = retry_callback
+        self.wait_callback = wait_callback
         self.session = requests.Session()
         self.session.headers.update({"X-Api-Key": api_key, "Accept": "application/json"})
         self._next_request_at = 0.0
@@ -161,14 +164,20 @@ class HollisClient:
     def close(self):
         self.session.close()
 
-    def _wait_until(self, deadline, message):
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return
-            if self.status_callback:
-                self.status_callback(f"{message}: {math.ceil(remaining)} seconds remaining.")
-            time.sleep(min(1.0, remaining))
+    def _wait_until(self, deadline, message, is_delay=False):
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                if self.wait_callback:
+                    self.wait_callback(remaining, is_delay)
+                if self.status_callback:
+                    self.status_callback(f"{message}: {math.ceil(remaining)} seconds remaining.")
+                time.sleep(min(1.0, remaining))
+        finally:
+            if self.wait_callback:
+                self.wait_callback(0.0, is_delay)
 
     def wait_for_second_pass(self):
         if self._deferred_error is not None:
@@ -176,9 +185,12 @@ class HollisClient:
         self._wait_until(
             max(self._next_request_at, time.monotonic() + SECOND_PASS_DELAY_SECONDS),
             "Waiting before the recovery pass",
+            is_delay=True,
         )
 
     def _schedule_retry(self, attempt, header, status_code=None):
+        if self.retry_callback:
+            self.retry_callback()
         delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
         server_delay = retry_after_seconds(header)
         # Do not shorten a server-requested delay. Stop this run instead
@@ -210,7 +222,8 @@ class HollisClient:
         }
         attempts = len(RETRY_DELAYS) + 1
         for attempt in range(attempts):
-            self._wait_until(self._next_request_at, self._wait_reason)
+            self._wait_until(self._next_request_at, self._wait_reason,
+                             is_delay=(attempt > 0))
             if self.status_callback:
                 self.status_callback(f"Searching ISBN {isbn}, attempt {attempt + 1}/{attempts}.")
             started = time.monotonic()
