@@ -143,18 +143,16 @@ def classify_rows(sheet, rows, isbn_col, client, progress=None, status=None,
     instructions or authentication failures end it without recovery.
     """
     groups, results, outcomes = {}, {}, {}
-    row_isbns, invalid_rows = {}, set()
+    row_isbns = {}
     client.run_notice = ""
     for row in rows:
         raw = sheet.cell(row, isbn_col).value
-        isbns, invalid = split_isbns(raw)
+        isbns, _ = split_isbns(raw)
         if not isbns:
             missing = raw is None or str(raw).strip() == ""
             results[row] = SearchResult("white", reason="Missing ISBN." if missing else "Invalid ISBN (format, length, or checksum).")
         else:
             row_isbns[row] = isbns
-            if invalid:
-                invalid_rows.add(row)
             for isbn in isbns:
                 groups.setdefault(isbn, []).append(row)
 
@@ -187,9 +185,7 @@ def classify_rows(sheet, rows, isbn_col, client, progress=None, status=None,
             elif all(key in outcomes for key in isbns):
                 uncertain = next((outcomes[key] for key in isbns
                                   if outcomes[key].status == "white"), None)
-                results[row] = uncertain or (
-                    SearchResult("white", reason="One or more ISBN entries are invalid; valid ISBNs had no match.")
-                    if row in invalid_rows else outcomes[isbns[-1]])
+                results[row] = uncertain or outcomes[isbns[-1]]
         if progress:
             progress(len(results), len(rows))
 

@@ -154,7 +154,7 @@ Each entry is validated separately. The app removes whitespace and hyphens withi
 
 Valid ISBNs are considered in their listed order, reusing results already obtained in the run. The app stops at the first ISBN with confirmed matching records and applies the existing HOLLIS-number, color, and Notes rules to that search. It does not combine matches across ISBNs. A search containing a confirmed match alongside unverifiable candidates still stops the row and retains its uncolored manual-review result.
 
-Invalid entries are skipped while valid ISBNs are searched. If none matches, a row becomes green only when all nonempty entries are valid and every search reliably reports no match. Otherwise it remains uncolored with an explanation.
+Invalid entries are skipped while valid ISBNs are searched. When at least one valid ISBN is present, invalid entries do not prevent green, red, or yellow coloring. If every valid ISBN search reliably reports no match, the row becomes green with blank Notes. Matches follow the existing red/yellow rules. Search failures or incomplete HOLLIS metadata still leave a row uncolored when a reliable classification cannot be established.
 
 Blank cells and cells with no valid ISBN remain uncolored. The app cannot restore leading zeros already lost by Excel. ISBN formulas are not evaluated; use their calculated values as input.
 
