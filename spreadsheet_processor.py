@@ -14,7 +14,7 @@ from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.worksheet.cell_range import MultiCellRange
 
 from hollis_api import SearchError, SearchResult
-from isbn_utils import normalize_isbn
+from isbn_utils import split_isbns
 
 LOG = logging.getLogger(__name__)
 FILLS = {
@@ -143,15 +143,20 @@ def classify_rows(sheet, rows, isbn_col, client, progress=None, status=None,
     instructions or authentication failures end it without recovery.
     """
     groups, results, outcomes = {}, {}, {}
+    row_isbns, invalid_rows = {}, set()
     client.run_notice = ""
     for row in rows:
         raw = sheet.cell(row, isbn_col).value
-        isbn = normalize_isbn(raw)
-        if isbn is None:
+        isbns, invalid = split_isbns(raw)
+        if not isbns:
             missing = raw is None or str(raw).strip() == ""
             results[row] = SearchResult("white", reason="Missing ISBN." if missing else "Invalid ISBN (format, length, or checksum).")
         else:
-            groups.setdefault(isbn, []).append(row)
+            row_isbns[row] = isbns
+            if invalid:
+                invalid_rows.add(row)
+            for isbn in isbns:
+                groups.setdefault(isbn, []).append(row)
 
     # Separate search timing from row progress: duplicates and invalid ISBNs
     # do not represent additional searches. Recovery is never treated as done
@@ -162,18 +167,54 @@ def classify_rows(sheet, rows, isbn_col, client, progress=None, status=None,
 
     report_timing("start")
 
-    def update(isbn, result):
-        outcomes[isbn] = result
+    def needed(isbn):
+        # A confirmed match (including a partial white result) ends this row's
+        # search. Keep the API's classification and review notes intact.
+        retry = isbn in outcomes and outcomes[isbn].retryable
         for row in groups[isbn]:
-            results[row] = result
+            keys = row_isbns[row]
+            preceding = keys if retry else keys[:keys.index(isbn)]
+            if not any(outcomes[key].matches for key in preceding if key in outcomes):
+                return True
+        return False
+
+    def refresh_results():
+        for row, isbns in row_isbns.items():
+            matched = next((outcomes[key] for key in isbns
+                            if key in outcomes and outcomes[key].matches), None)
+            if matched is not None:
+                results[row] = matched
+            elif all(key in outcomes for key in isbns):
+                uncertain = next((outcomes[key] for key in isbns
+                                  if outcomes[key].status == "white"), None)
+                results[row] = uncertain or (
+                    SearchResult("white", reason="One or more ISBN entries are invalid; valid ISBNs had no match.")
+                    if row in invalid_rows else outcomes[isbns[-1]])
         if progress:
             progress(len(results), len(rows))
 
+    def update(isbn, result):
+        outcomes[isbn] = result
+        refresh_results()
+
+    def pending_keys(keys):
+        return [key for key in keys if needed(key) and
+                (key not in outcomes or outcomes[key].retryable)]
+
     def run_pass(keys, label, recovery=False):
         report_timing("pass_start", pending=len(keys), recovery=recovery)
-        for position, isbn in enumerate(keys, 1):
+        allowed, attempted = set(keys), set()
+        # Walk cell lists rather than the unique-ISBN index: a shared ISBN
+        # may be an alternative in a later row whose first ISBN must run first.
+        work = ((row, isbn) for row, isbns in row_isbns.items() for isbn in isbns)
+        for row, isbn in work:
+            preceding = row_isbns[row][:row_isbns[row].index(isbn)]
+            if (isbn not in allowed or isbn in attempted or not needed(isbn)
+                    or any(outcomes[key].matches for key in preceding if key in outcomes)):
+                continue
+            attempted.add(isbn)
             if status:
-                status(f"{label}: ISBN {position} of {len(keys)}.")
+                status(f"{label}: ISBN {len(attempted)} of {len(keys)}.")
             error = None
             previous = outcomes.get(isbn)
             report_timing("query_start")
@@ -190,9 +231,9 @@ def classify_rows(sheet, rows, isbn_col, client, progress=None, status=None,
             if recovery and previous is not None and previous.retryable and not result.retryable and error is None:
                 result.reason = (result.reason + " Search completed on the recovery pass.").strip()
             update(isbn, result)
-            retry_pending = (sum(value.retryable for value in outcomes.values())
-                             if not recovery else 0)
-            report_timing("completed", pending=len(keys) - position + retry_pending)
+            remaining = (sum(needed(key) for key in keys if key not in attempted) if recovery
+                         else len(pending_keys(groups)))
+            report_timing("completed", pending=remaining)
             if error is not None and error.stop_batch:
                 return error
         return None
@@ -201,8 +242,7 @@ def classify_rows(sheet, rows, isbn_col, client, progress=None, status=None,
         progress(len(results), len(rows))
     stopped = run_pass(list(groups), "First pass")
     can_recover = stopped is None or (stopped.retryable and not stopped.defer_run)
-    pending = [isbn for isbn in groups
-               if isbn not in outcomes or outcomes[isbn].retryable]
+    pending = pending_keys(groups)
     if pending and can_recover:
         report_timing("recovery", pending=len(pending), recovery=True)
         try:
@@ -216,6 +256,8 @@ def classify_rows(sheet, rows, isbn_col, client, progress=None, status=None,
     if stopped is not None:
         client.run_notice = f"Run stopped: {stopped} Completed results are available below."
     for isbn in groups:
+        if not needed(isbn):
+            continue
         if isbn not in outcomes:
             reason = "Not searched because the batch was stopped."
             if stopped is not None:

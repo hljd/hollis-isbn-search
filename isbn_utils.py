@@ -42,6 +42,25 @@ def normalize_isbn(value):
     return None
 
 
+def split_isbns(value):
+    """Return ordered unique valid ISBNs and whether any nonempty part is invalid.
+
+    Keep spaces and hyphens inside ISBNs; split only explicit separators.
+    Periods are not separators because numeric exports may end in .0.
+    """
+    parts = re.split(r"[,;／/|，；、\r\n]+", value) if isinstance(value, str) else [value]
+    found, invalid = [], False
+    for part in parts:
+        if part is None or (isinstance(part, str) and not part.strip()):
+            continue
+        isbn = normalize_isbn(part)
+        if isbn is None:
+            invalid = True
+        elif isbn not in found:
+            found.append(isbn)
+    return found, invalid
+
+
 def isbn13(isbn):
     """Convert a validated ISBN-10 to ISBN-13 for comparisons."""
     if len(isbn) == 13:

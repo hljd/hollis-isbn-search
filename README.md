@@ -50,7 +50,7 @@ Keep these files together, using the exact names below. Remove download suffixes
 | --- | --- |
 | `app.py` | Streamlit interface, selectors, progress, timing display, results, and download. |
 | `hollis_api.py` | API requests, response parsing, ISBN matching, HOLLIS-number extraction, links, and retries. |
-| `isbn_utils.py` | ISBN normalization, checksum validation, and ISBN-10/ISBN-13 comparison. |
+| `isbn_utils.py` | Splitting multi-ISBN cells, normalization, checksum validation, and ISBN-10/ISBN-13 comparison. |
 | `spreadsheet_processor.py` | File import, duplicate handling, recovery pass, Notes, and workbook export. |
 | `time_estimator.py` | Per-run timing samples, pending searches, and scheduled-wait estimates. |
 | `requirements.txt` | Python dependencies. |
@@ -148,9 +148,15 @@ Legacy `.xls`, macro-enabled `.xlsm`, and `.ods` files are not supported. Conver
 
 ### ISBN preparation
 
-Use one ISBN per cell, preferably stored as text. The app removes whitespace and hyphens, handles integer-valued numbers and digit strings ending in `.0`, and accepts a final `X` in ISBN-10 values. It validates length, character format, and ISBN-10/ISBN-13 checksums.
+Use one or more ISBNs per cell, preferably stored as text. Multiple ISBNs can be separated by commas, semicolons, slashes, pipes, or line breaks; full-width commas/semicolons/slashes (`，；／`) and the ideographic comma (`、`) are also supported. For example, `978-0-306-40615-7; 0140328726` supplies two ISBNs. In CSV files, quote a field containing commas so it remains one column.
 
-Blank cells, malformed values, and cells containing multiple identifiers remain uncolored. The app cannot restore leading zeros already lost by Excel. ISBN formulas are not evaluated; use their calculated values as input.
+Each entry is validated separately. The app removes whitespace and hyphens within an ISBN, handles integer-valued numbers and digit strings ending in `.0`, and accepts a final `X` in ISBN-10 values. It validates length, character format, and ISBN-10/ISBN-13 checksums. Spaces and hyphens alone are not list separators; repeated separators and empty entries are ignored.
+
+Valid ISBNs are considered in their listed order, reusing results already obtained in the run. The app stops at the first ISBN with confirmed matching records and applies the existing HOLLIS-number, color, and Notes rules to that search. It does not combine matches across ISBNs. A search containing a confirmed match alongside unverifiable candidates still stops the row and retains its uncolored manual-review result.
+
+Invalid entries are skipped while valid ISBNs are searched. If none matches, a row becomes green only when all nonempty entries are valid and every search reliably reports no match. Otherwise it remains uncolored with an explanation.
+
+Blank cells and cells with no valid ISBN remain uncolored. The app cannot restore leading zeros already lost by Excel. ISBN formulas are not evaluated; use their calculated values as input.
 
 ## Search and API behavior
 
@@ -158,7 +164,7 @@ Requests use `q=any,contains,<ISBN>` with `vid=01HVD_INST:HVD2`, `tab=LibraryCat
 
 The client retrieves pages of up to 50 candidates and stops for manual review when a query exceeds its configured 500-result limit or a response is incomplete or inconsistent. If candidate metadata cannot establish the result reliably, the app does not classify the row green. Two or more confirmed matches already qualify for yellow review.
 
-Identical normalized ISBN strings share a result within each run. ISBN-10/ISBN-13 equivalence is used for matching, but equivalent inputs of different lengths may still generate separate searches. No shared cross-user result cache is implemented.
+Identical normalized ISBN strings share a result within each run, including across cells containing different ISBN lists. ISBN-10/ISBN-13 equivalence is used for matching, but equivalent inputs of different lengths may still generate separate searches. No shared cross-user result cache is implemented.
 
 | Setting | Current behavior |
 | --- | --- |
@@ -178,7 +184,7 @@ These are application defaults, not documented Harvard API quota limits. Pacing 
 
 The elapsed timer includes requests, scheduled pauses, and recovery searches. It excludes workbook export. The final duration appears with the results.
 
-The remaining-time estimate begins after five completed query attempts have supplied timing samples. Normalized duplicates and invalid rows do not add searches; a query repeated in recovery contributes another timing sample. The estimate uses average observed query duration and pending work, including known scheduled retry/recovery waits. Completed retry delays remain in the historical average for that run.
+The remaining-time estimate begins after five completed query attempts have supplied timing samples. The initial estimate counts unique valid ISBNs, including alternatives that may be skipped after a match. Pending work decreases as those alternatives are skipped. Normalized duplicates and invalid entries do not add searches; a query repeated in recovery contributes another timing sample. The estimate uses average observed query duration and pending work, including known scheduled retry/recovery waits. Completed retry delays remain in the historical average for that run.
 
 Scheduled wait countdowns refresh roughly once per second. During a blocking HTTP request, the display may not update until the request returns or times out. Estimates can rise after new delays and may overestimate when historical retry costs are combined with a known wait. Small batches can finish before an estimate appears. No historical timing database is required or maintained.
 
@@ -211,7 +217,7 @@ Deploy related modules together. Mixing old and new files can produce errors suc
 | Problem | What to check |
 | --- | --- |
 | Missing API key | Local file must be `.streamlit/secrets.toml`, with `HOLLIS_API_KEY` at the top level; hosted deployments need the same key in Secrets settings. |
-| All ISBNs appear invalid | Confirm the ISBN and title selectors were not swapped, choose the correct header, and check for lost leading zeros or multiple values per cell. |
+| All ISBNs appear invalid | Confirm the ISBN and title selectors were not swapped, choose the correct header, and check for lost leading zeros or unsupported separators between values. |
 | Garbled text or incorrect columns | Set the text encoding and separator explicitly. |
 | Frequent HTTP 429 messages | Allow scheduled waits and recovery; avoid simultaneous large runs using the same key. |
 | Missing module or attribute after deployment | Check exact filenames and upload all related modules from the same version. |
